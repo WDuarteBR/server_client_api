@@ -4,9 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"io/ioutil"
+	"io"
+	"log"
 	"net/http"
+	"strconv"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 /* TODO:
@@ -34,9 +38,13 @@ type Cotacao struct {
 	} `json:"USDBRL"`
 }
 
+type RespCotacao struct {
+	Bid float64 `json:"bid"`
+}
+
 func main() {
 	http.HandleFunc("/cotacao", handlerCotacao)
-	http.ListenAndServe(":8080", nil)
+	http.ListenAndServe(":8081", nil)
 }
 
 func handlerCotacao(w http.ResponseWriter, r *http.Request) {
@@ -53,35 +61,58 @@ func handlerCotacao(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = salvar(cot)
+	db, err := sql.Open("sqlite3", "./db/cambio.db")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
+		log.Fatalln(err)
+		return
+	}
+	defer db.Close()
+
+	err = salvar(db, cot)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Fatalln(err)
 		return
 	}
 
-	cotJson, err := json.Marshal(cot)
+	cotResp, err := getLastSave(db)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		log.Fatalln(err)
+		return
+	}
+
+	cotJson, err := json.Marshal(cotResp)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	w.Write(cotJson)
-
 }
 
-func salvar(cot *Cotacao) error {
-	dsn := "root:root@tcp(localhost:3306)/goexpert"
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return err
-	}
-
-	defer db.Close()
+func salvar(db *sql.DB, cot *Cotacao) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*10)
 	defer cancel()
 
-	stmt, err := db.Prepare("insert into cota")
+	stmt, err := db.Prepare("insert into cotacao(name, bid, create_date) values ($,$,$)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	strBid := &cot.Usdbrl.Bid
+	bid, err := strconv.ParseFloat(*strBid, 8)
+	if err != nil {
+		return err
+	}
+
+	_, err = stmt.ExecContext(ctx, &cot.Usdbrl.Code, &cot.Usdbrl.Name, bid, &cot.Usdbrl)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -100,20 +131,51 @@ func GetCotacao() (*Cotacao, error) {
 		return nil, err
 	}
 
-	defer req.Body.Close()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-	resp, err := ioutil.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
 
+	// log.Println(resp.Body)
+
+	resJson, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
 	var cot Cotacao
-	err = json.Unmarshal(resp, &cot)
+	err = json.Unmarshal(resJson, &cot)
 	if err != nil {
 		return nil, err
 	}
 
 	return &cot, nil
+
+}
+
+func getLastSave(db *sql.DB) (*RespCotacao, error) {
+
+	rows, err := db.Query("select bid from cotacao where id = (select max(id) from cotacao")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var respCot RespCotacao
+
+	for rows.Next() {
+
+		err = rows.Scan(&respCot.Bid)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &respCot, nil
 
 }
