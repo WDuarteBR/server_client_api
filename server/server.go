@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -39,12 +38,12 @@ type Cotacao struct {
 }
 
 type RespCotacao struct {
-	Bid float64 `json:"bid"`
+	Bid string `json:"bid"`
 }
 
 func main() {
 	http.HandleFunc("/cotacao", handlerCotacao)
-	http.ListenAndServe(":8081", nil)
+	http.ListenAndServe(":8080", nil)
 }
 
 func handlerCotacao(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +68,7 @@ func handlerCotacao(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	err = salvar(db, cot)
+	err = salvarCotacao(db, cot)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		log.Fatalln(err)
@@ -92,24 +91,21 @@ func handlerCotacao(w http.ResponseWriter, r *http.Request) {
 	w.Write(cotJson)
 }
 
-func salvar(db *sql.DB, cot *Cotacao) error {
+func salvarCotacao(db *sql.DB, cot *Cotacao) error {
+	/*
+	  função responsável por persistir a cotação no banco de dados
+	*/
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*10)
 	defer cancel()
 
-	stmt, err := db.Prepare("insert into cotacao(name, bid, create_date) values ($,$,$)")
+	stmt, err := db.Prepare("insert into cotacao(name, bid, create_date) values (?,?,?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
-	strBid := &cot.Usdbrl.Bid
-	bid, err := strconv.ParseFloat(*strBid, 8)
-	if err != nil {
-		return err
-	}
-
-	_, err = stmt.ExecContext(ctx, &cot.Usdbrl.Code, &cot.Usdbrl.Name, bid, &cot.Usdbrl)
+	_, err = stmt.ExecContext(ctx, &cot.Usdbrl.Name, &cot.Usdbrl.Bid, &cot.Usdbrl.CreateDate)
 	if err != nil {
 		return err
 	}
@@ -118,6 +114,9 @@ func salvar(db *sql.DB, cot *Cotacao) error {
 }
 
 func GetCotacao() (*Cotacao, error) {
+	/*
+		função responsável por consumir a API de cotação
+	*/
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*200)
 	defer cancel()
@@ -141,8 +140,6 @@ func GetCotacao() (*Cotacao, error) {
 		return nil, err
 	}
 
-	// log.Println(resp.Body)
-
 	resJson, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
@@ -159,8 +156,12 @@ func GetCotacao() (*Cotacao, error) {
 }
 
 func getLastSave(db *sql.DB) (*RespCotacao, error) {
+	/*
+		função responsável por selecionar e retornar a ultima cotação
+		persistida no banco de dados
+	*/
 
-	rows, err := db.Query("select bid from cotacao where id = (select max(id) from cotacao")
+	rows, err := db.Query("select bid from cotacao where id = (select max(id) from cotacao)")
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +175,7 @@ func getLastSave(db *sql.DB) (*RespCotacao, error) {
 		if err != nil {
 			return nil, err
 		}
+
 	}
 
 	return &respCot, nil
